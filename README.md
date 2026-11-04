@@ -1,5 +1,11 @@
 # RoadWatch AI — BUILDx Road Safety Video Prototype
 
+RoadWatch AI analyzes traffic videos with computer vision to detect and track road users and produce evidence for safety review. The current implementation is Phase 3: video detection and tracking.
+
+## Project context
+
+The longer-term project may identify candidate near-miss events, timestamps, severity levels, annotated evidence, and road danger insights. Those are planned capabilities; this Phase 3 implementation produces tracking records only.
+
 ## Phase 3: video detection and tracking
 
 This phase reads a fixed-camera video, detects common road users with Ultralytics YOLO, tracks sequential frames with persistent ByteTrack IDs, and writes annotated video plus one JSONL tracking record per detection. It uses image-space coordinates only. It does not classify near-misses, estimate physical distances, calculate TTC/PET, or predict accidents.
@@ -111,3 +117,20 @@ Tests use a tiny synthetic clip and a deterministic fake detector; they do not d
 ### Project status
 
 Phase 3 implementation and synthetic unit verification are in place. Actual model/video integration remains to be run after a sample clip is provided and model weights are available. No Phase 4 API or dashboard functionality is included.
+
+## Technology
+
+Python, Ultralytics YOLO, OpenCV, and ByteTrack are used for the current tracking pipeline. FastAPI, React, Vite, Tailwind CSS, and Leaflet remain part of the broader planned product direction.
+
+## Team
+
+- Silambarsan.S
+- Vignesh.K
+- Muzameer.K
+- Praveen Kannan.A
+
+BCA Data Science, B.S. Abdur Rahman Crescent Institute of Science & Technology, Chennai
+
+## Disclaimer
+
+This prototype supports human review. It does not predict accidents or provide validated road-safety conclusions.
