@@ -1,0 +1,9 @@
+# Install PyTorch separately using the official selector for Windows/CUDA.
+ultralytics
+opencv-python
+numpy
+fastapi
+uvicorn[standard]
+python-multipart
+# Optional test runner; the standard-library unittest suite needs no extra package.
+pytest
