@@ -1,0 +1,98 @@
+[
+    {
+        "object_ids": [
+            307,
+            401
+        ],
+        "classes": [
+            "truck",
+            "person"
+        ],
+        "start_frame": 398,
+        "peak_frame": 418,
+        "end_frame": 422,
+        "minimum_distance_pixels": 24.33,
+        "risk": "HIGH",
+        "status": "candidate_for_human_review"
+    },
+    {
+        "object_ids": [
+            442,
+            502
+        ],
+        "classes": [
+            "person",
+            "truck"
+        ],
+        "start_frame": 431,
+        "peak_frame": 434,
+        "end_frame": 441,
+        "minimum_distance_pixels": 2.79,
+        "risk": "HIGH",
+        "status": "candidate_for_human_review"
+    },
+    {
+        "object_ids": [
+            637,
+            671
+        ],
+        "classes": [
+            "bicycle",
+            "truck"
+        ],
+        "start_frame": 634,
+        "peak_frame": 637,
+        "end_frame": 662,
+        "minimum_distance_pixels": 68.51,
+        "risk": "LOW",
+        "status": "candidate_for_human_review"
+    },
+    {
+        "object_ids": [
+            650,
+            671
+        ],
+        "classes": [
+            "person",
+            "truck"
+        ],
+        "start_frame": 634,
+        "peak_frame": 644,
+        "end_frame": 662,
+        "minimum_distance_pixels": 30.85,
+        "risk": "MEDIUM",
+        "status": "candidate_for_human_review"
+    },
+    {
+        "object_ids": [
+            849,
+            914
+        ],
+        "classes": [
+            "person",
+            "truck"
+        ],
+        "start_frame": 1049,
+        "peak_frame": 1061,
+        "end_frame": 1066,
+        "minimum_distance_pixels": 20.72,
+        "risk": "HIGH",
+        "status": "candidate_for_human_review"
+    },
+    {
+        "object_ids": [
+            979,
+            982
+        ],
+        "classes": [
+            "person",
+            "motorcycle"
+        ],
+        "start_frame": 1139,
+        "peak_frame": 1146,
+        "end_frame": 1154,
+        "minimum_distance_pixels": 82.11,
+        "risk": "LOW",
+        "status": "candidate_for_human_review"
+    }
+]
