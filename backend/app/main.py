@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config import TrackingConfig
+from .near_miss import analyze_near_misses
 from .tracking_pipeline import run_tracking
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,10 +83,34 @@ def _public_result(analysis_id: str, metadata: dict) -> dict:
         "events_available": events_available,
         "events": events,
         "limitations": (
-            "YOLO and ByteTrack outputs are visual tracking records. Candidate "
-            "near-miss events require the event-analysis stage and human review."
+            "Near-miss events are heuristic candidates based on image-space "
+            "distances. They are not confirmed incidents and require human review."
         ),
     }
+
+
+def _near_miss_records(tracking_path: Path) -> list[dict]:
+    """Convert this API's JSONL records to the teammate's event input shape."""
+    tracked_objects = []
+    with tracking_path.open("r", encoding="utf-8") as tracking_file:
+        for line in tracking_file:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            track_id = record.get("track_id")
+            bbox = record.get("bbox")
+            if track_id is None or not bbox or len(bbox) != 4:
+                continue
+            tracked_objects.append({
+                "frame": int(record["frame"]),
+                "object_id": int(track_id),
+                "class": str(record["class_name"]),
+                # Keep the same box-center distance convention as the
+                # teammate's current tracked_objects.json input.
+                "x": (float(bbox[0]) + float(bbox[2])) / 2,
+                "y": (float(bbox[1]) + float(bbox[3])) / 2,
+            })
+    return tracked_objects
 
 
 def _process_analysis(analysis_id: str, video_path: Path, original_name: str, device: str):
@@ -98,6 +123,19 @@ def _process_analysis(analysis_id: str, video_path: Path, original_name: str, de
         # Serialize inference jobs so multiple uploads do not compete for GPU RAM.
         with gpu_lock:
             metadata = run_tracking(video_path, config)
+        tracked_objects = _near_miss_records(Path(metadata["records_output"]))
+        events = analyze_near_misses(tracked_objects)
+        fps = metadata.get("fps")
+        for index, event in enumerate(events, start=1):
+            event["event_id"] = f"{analysis_id}-{index}"
+            event["review_status"] = "pending"
+            if fps:
+                event["start_time_seconds"] = round(event["start_frame"] / fps, 3)
+                event["peak_time_seconds"] = round(event["peak_frame"] / fps, 3)
+                event["end_time_seconds"] = round(event["end_frame"] / fps, 3)
+        (result_dir / "events.json").write_text(
+            json.dumps(events, indent=2), encoding="utf-8"
+        )
         metadata["input_name"] = original_name
         metadata["duration_seconds"] = round(
             metadata["frames_processed"] / metadata["fps"], 3
@@ -191,5 +229,5 @@ def get_analysis_events(analysis_id: str):
         "analysis_id": analysis_id,
         "events_available": result["events_available"],
         "events": result["events"],
-        "message": None if result["events_available"] else "Near-miss event output is not integrated yet.",
+        "message": None if result["events_available"] else "Event output is unavailable for this analysis.",
     }
