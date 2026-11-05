@@ -1,136 +1,141 @@
-# RoadWatch AI — BUILDx Road Safety Video Prototype
+# RoadSense — road-safety video review prototype
 
-RoadWatch AI analyzes traffic videos with computer vision to detect and track road users and produce evidence for safety review. The current implementation is Phase 3: video detection and tracking.
+RoadSense processes a traffic video with YOLO and ByteTrack, writes an annotated video and tracking records, and identifies **candidate near-miss events for human review**. It has separate Public and Authority app areas. Authority accounts are authenticated by the API; the Public workspace currently shows confirmed-hotspot and route-demo states.
 
-## Project context
+## What is implemented
 
-The longer-term project may identify candidate near-miss events, timestamps, severity levels, annotated evidence, and road danger insights. Those are planned capabilities; this Phase 3 implementation produces tracking records only.
+- FastAPI video-analysis API connected to the YOLO/ByteTrack tracking pipeline and near-miss candidate logic.
+- React/Vite frontend with separate Public and Authority sign-in pages.
+- Supabase Auth for password login and Supabase Postgres for account profiles and roles.
+- Public users can register from the Public login page. Authority accounts are provisioned by the project administrator; public self-registration cannot create an Authority account.
+- Analysis upload, status, events, video, and tracking downloads require an Authority bearer session. The annotated video is delivered through the authenticated API, not as a public static file.
 
-## Phase 3: video detection and tracking
+## Selected computer-vision integration
 
-This phase reads a fixed-camera video, detects common road users with Ultralytics YOLO, tracks sequential frames with persistent ByteTrack IDs, and writes annotated video plus one JSONL tracking record per detection. It uses image-space coordinates only. It does not classify near-misses, estimate physical distances, calculate TTC/PET, or predict accidents.
+The integration branch uses the YOLO + ByteTrack approach from `vicky-dashboard`. Its original tracker was a script that started inference as soon as it was imported and used hard-coded paths. The API now calls an import-safe entry point in `backend/roadwatch_engine/src/object_tracking.py`. It keeps YOLO tracking with `tracker="bytetrack.yaml"` and `persist=True`, then writes per-frame JSONL records and an intermediate `annotated_tracking.mp4`. The API passes those records to the selected analyzer in `backend/roadwatch_engine/src/near_miss.py` and overlays its event frame ranges into the final `annotated.mp4`.
 
-The planned event-analysis phase will report **candidate near-miss events for human review**. These are not confirmed accidents, and the system does not predict accidents. Phase 3 itself produces tracking records only; it does not label events.
+The candidate analyzer uses the box-center image coordinates already used by the Vicky branch. It considers its configured relevant class pairs when they are within 150 image pixels for at least three consecutive frames, requires an internal closest-distance observation with at least 10 pixels of approach and separation, then assigns the branch's HIGH/MEDIUM/LOW review label from the minimum pixel distance. These are branch-specific heuristic assumptions, not universal or validated safety thresholds. They do not represent physical distance, collision probability, or accident prediction. The analysis workflow does not currently call a collision or ego-collision detector.
 
-### Architecture
+The repository clone does not include the official BUILDx playbook PDF, a model-weight file, or the source traffic video. The selected branch's method is therefore integrated as supplied; it has not been verified against the PDF or validated on real footage. The analyzer uses raw image-space positions and has no camera-motion compensation. Moving dashcam results are not suitable for reliable classification under this method.
 
-`video -> backend/app/video_io.py -> backend/app/detector.py (YOLO + ByteTrack) -> backend/app/tracking_pipeline.py -> annotated.mp4 + tracking.jsonl + metadata.json`
+## Requirements
 
-Road-zone polygons can be supplied in image pixels and are drawn as outlines. They are not used for alerts or event classification. Frame indices start at **0**; timestamp is `frame / fps`. If video FPS metadata is invalid, the pipeline uses 25 FPS for timestamps and output and reports that fallback in metadata.
+- Windows PowerShell
+- Python 3.12
+- Node.js and npm
+- PyTorch installed for your hardware. Use the official [PyTorch installation selector](https://pytorch.org/get-started/locally/) to choose the Windows/Pip/Python/CUDA option. CPU is supported but slower.
 
-### Requirements and installation (Windows PowerShell)
+## Install the backend
 
-Use Python 3.12. PyTorch must be installed separately using the official [PyTorch Start Locally selector](https://pytorch.org/get-started/locally/): choose Windows, Pip, Python, and the CUDA option available for your driver. CUDA is optional; CPU works without a CUDA build.
+From the repository root:
 
 ```powershell
-cd "D:\codex demo"
 py -3.12 -m venv .venv
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-# Install torch using the command generated by the official selector first.
+# Install PyTorch using the command generated by the official selector first.
 python -m pip install -r backend\requirements.txt
-python -m pip install pytest
-python -c "import torch; print(torch.__version__, 'CUDA:', torch.cuda.is_available())"
 ```
 
-Ultralytics downloads the selected model weights on first use if the model name is not already cached. The default is `yolo11n.pt`, a small model appropriate for an RTX 3050 6 GB or CPU fallback. Weights are excluded from Git.
+Ultralytics downloads the configured model weights on first use if they are not already cached. The default model is `yolo11n.pt`.
 
-### Input videos
+## Connect Supabase
 
-Supported formats depend on the codecs in the installed OpenCV build; common MP4/H.264, AVI, MOV, and MKV clips are typical. Put a short, licensed fixed-camera clip in `data\sample\` (the media is git-ignored). The project contains no sample video, so provide a path to your own clip.
+1. Create a Supabase project and open **Project Settings → API Keys**. Copy the Project URL and the **publishable key**.
+2. From the repository root, create your local environment file:
 
-### Run tracking
+   ```powershell
+   Copy-Item .env.example .env
+   notepad .env
+   ```
 
-From the repository root, with the virtual environment active:
+3. Replace the example values in `.env` with your Project URL and publishable key. Keep `.env` private; never put a Supabase secret key in the browser or commit it to Git.
+4. In the Supabase Dashboard, open **SQL Editor**, paste the contents of `supabase/schema.sql`, and run it. It creates the profile and reviewed-event tables, row-level security policies, and a trigger that creates a `public` profile after signup. Re-run the updated file when adding these features; its setup statements are safe to reapply.
+5. In **Authentication → URL Configuration**, set the local Site URL to `http://127.0.0.1:5173` and allow the local frontend URL for email confirmation redirects. Public signup may require the user to confirm email before the first sign-in.
+
+The app uses Supabase Auth's email/password endpoints and sends the signed-in user's access token to FastAPI. FastAPI verifies the token with Supabase Auth and reads that user's profile through the profile table's RLS policy. The project uses a publishable key and the user's token; it does not need a service-role/secret key.
+
+### Set up an Authority account
+
+Create the account through the Public signup page, confirm its email if requested, then open Supabase **SQL Editor** and promote that profile as an administrator:
+
+```sql
+update public.profiles
+set role = 'authority'
+where lower(email) = lower('authority@example.com');
+```
+
+Replace the email with the account you created. Only run this query in the Supabase Dashboard as the project administrator. Users cannot change their own role through the app. Then sign in through `/authority/login`.
+
+## Start the app
+
+Run the API from the repository root:
 
 ```powershell
-python -m app.run_tracking --video "data\sample\demo.mp4" --device auto
+python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8001
 ```
 
-The module path uses the backend folder. If your PowerShell does not find `app`, run:
+Leave that PowerShell window open. In a second window:
 
 ```powershell
-$env:PYTHONPATH = "backend"
-python -m app.run_tracking --video "data\sample\demo.mp4" --device auto
+cd .\frontend
+npm ci
+if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
+npm run dev
 ```
 
-Options:
+Open the Vite address shown in the terminal, normally `http://127.0.0.1:5173`. The Public page can create a user account. Sign in to the Authority page using the account created above.
 
-```powershell
-python -m app.run_tracking --help
-python -m app.run_tracking --video "data\sample\demo.mp4" --model "yolo11n.pt" --output-dir "outputs\run-01" --device cpu --confidence 0.25 --image-size 640
-```
+Analysis job state is held in API memory and is cleared when the API restarts. Authentication accounts, profiles, and authority-reviewed event locations are managed by Supabase. Generated video outputs remain under `backend/results/` on the machine running the API.
 
-`--device auto` selects CUDA device 0 when CUDA-enabled PyTorch is available, otherwise CPU. `--device 0` explicitly requires CUDA and exits with a clear error if unavailable. `--device cpu` forces CPU. `--video-name` and `--records-name` override output names.
+## API contract
 
-### Outputs
+Open `http://127.0.0.1:8001/docs` while the API is running. Sign in through the frontend or call the auth endpoints to obtain a bearer token. The frontend submits the video as multipart field `file`; no Camera ID or device selector is needed. Location name and coordinates are optional metadata. If provided, the location name and both coordinates must be supplied together.
+
+| Method | Endpoint | Access | Purpose |
+|---|---|---|---|
+| `GET` | `/api/health` | Public | API health check. |
+| `POST` | `/api/auth/register` | Public | Register a normal user through Supabase Auth. JSON: `name`, `email`, `password`. |
+| `POST` | `/api/auth/login` | Public | Sign in. JSON: `email`, `password`, `role` (`public` or `authority`). |
+| `GET` | `/api/auth/me` | Signed in | Validate the Supabase bearer token and return the current profile. |
+| `POST` | `/api/auth/refresh` | Public | Exchange a Supabase refresh token for a fresh session. |
+| `POST` | `/api/auth/logout` | Signed in | Sign out the current Supabase session. |
+| `POST` | `/api/analyze` | Authority | Upload required multipart `file`; optional location fields are `location_name`, `latitude`, `longitude`, and `location_source` (`camera` or `demo`). API accepts optional `device` query with default `auto`. Returns `analysis_id` and `status`. The frontend does not send Camera ID or device. |
+| `GET` | `/api/analyses/{analysis_id}` | Authority | Read job status and completed result. |
+| `GET` | `/api/analyses/{analysis_id}/events` | Authority | Read candidate events. |
+| `POST` | `/api/analyses/{analysis_id}/events/{event_id}/review` | Authority | Confirm or dismiss a candidate; decisions are saved to Supabase. |
+| `GET` | `/api/hotspots` | Public | Return grouped, confirmed event locations for the Public map. |
+| `GET` | `/api/analyses/{analysis_id}/video` | Authority | Stream the annotated MP4. |
+| `GET` | `/api/analyses/{analysis_id}/tracking` | Authority | Download the JSONL tracking output. |
+
+The completed result includes `result.annotated_video_url`, `result.metadata`, `result.camera_location`, and `result.events`. Supplied camera location is shown on the Authority map; YOLO/ByteTrack does not infer coordinates from ordinary video. `location_source: "demo"` marks simulated coordinates. An Authority can confirm or dismiss each candidate; confirmed candidates are grouped on the Public map. Event measurements currently use image-space pixels. A HIGH/MEDIUM/LOW label is a heuristic screening level; each result is a candidate that requires human review, not a confirmed accident or prediction.
+
+## Video pipeline outputs
+
+The pipeline writes to a unique `backend/results/<analysis_id>/` directory:
 
 ```text
-outputs/<chosen output directory>/
-  annotated.mp4
-  tracking.jsonl
-  metadata.json
+annotated.mp4
+annotated_tracking.mp4
+tracking.jsonl
+metadata.json
+events.json
 ```
 
-The annotated video keeps source dimensions and uses MP4V encoding. Each detection has a box, class, track ID when available, confidence, and a bottom-center dot. JSONL is one valid JSON object per detected object per frame; missing track IDs are `null`.
+`annotated_tracking.mp4` contains YOLO boxes and tracker IDs. `annotated.mp4` is the final API video and adds a **CANDIDATE - REVIEW** banner only during each candidate's inclusive frame range. These banners are not collision alerts. Frame indices start at zero; event timestamps use frame index divided by the video's FPS (a documented fallback is used only when metadata FPS is invalid).
 
-Example record shape (illustrative schema only; actual values come from model output):
+Uploaded source videos are stored temporarily in `backend/uploads/` and removed after processing. The API accepts MP4, MOV, AVI, and MKV videos up to 200 MB. Actual codecs must be supported by the local OpenCV build.
 
-```json
-{"frame":42,"timestamp_seconds":1.4,"track_id":7,"class_id":2,"class_name":"car","confidence":0.86,"bbox":[120.0,80.0,240.0,190.0],"bottom_center":[180.0,190.0]}
-```
+## Current limitations
 
-### Road-zone configuration (Python use)
-
-Zones use image-pixel `(x, y)` pairs and require at least three points. For example:
-
-```python
-from pathlib import Path
-from backend.app.config import TrackingConfig
-from backend.app.tracking_pipeline import run_tracking
-
-config = TrackingConfig(
-    output_dir=Path("outputs/zone-demo"),
-    road_zones=(((20, 200), (600, 200), (630, 470), (10, 470)),),
-)
-run_tracking("data/sample/demo.mp4", config)
-```
-
-### Tests
-
-```powershell
-python -m unittest discover -s tests -v
-```
-
-Tests use a tiny synthetic clip and a deterministic fake detector; they do not download weights or require a GPU. For actual inference, supply a sample clip and run the CLI above.
-
-### Troubleshooting and limits
-
-- **CUDA requested but unavailable:** install PyTorch from its official selector; meanwhile use `--device cpu` or `auto`.
-- **Cannot open video:** check the path and whether OpenCV can decode its codec; re-encode a permitted clip to H.264 MP4 if needed.
-- **Video writer unavailable:** the OpenCV build must include an MP4V writer. Pipeline validates that the resulting video can be reopened and decoded.
-- **Slow/OOM:** use CPU, smaller `--image-size` such as 512, or a shorter clip/model.
-- **No IDs for some objects:** YOLO/ByteTrack may return detections without an assigned track ID; those records retain `null` and no ID is fabricated.
-- Detection and tracking quality depend on view, lighting, occlusion, and model. This is a prototype for inspection, not a validated road-safety system.
-
-### Project status
-
-Phase 3 implementation and synthetic unit verification are in place. Actual model/video integration remains to be run after a sample clip is provided and model weights are available. No Phase 4 API or dashboard functionality is included.
+- Job status and source video processing are temporary API state. Authority review decisions and confirmed hotspot locations persist in Supabase. In-app alerts and real route optimization are not implemented.
+- Analysis status is in memory and does not survive an API restart.
+- Supabase Auth/Postgres covers accounts and profiles. Uploaded footage, analysis status, and generated output files still live on the API machine; they are not stored in Supabase Storage yet.
+- This is a hackathon prototype. For public deployment, configure HTTPS, restrict Supabase redirect URLs, and review account and data-retention policies.
+- Detection and near-miss thresholds have not been validated as a safety system. Results are candidate near-miss events for human review. RoadSense does not predict accidents, and no event output means only that the configured heuristic did not emit a candidate.
+- The API and frontend were validated with synthetic tests and build checks only. Real YOLO inference, GPU tracking continuity, annotated video playback through an authenticated browser session, and Supabase review persistence still require configured model weights, source footage, API secrets, and a live end-to-end run.
 
 ## Technology
 
-Python, Ultralytics YOLO, OpenCV, and ByteTrack are used for the current tracking pipeline. FastAPI, React, Vite, Tailwind CSS, and Leaflet remain part of the broader planned product direction.
-
-## Team
-
-- Silambarsan.S
-- Vignesh.K
-- Muzameer.K
-- Praveen Kannan.A
-
-BCA Data Science, B.S. Abdur Rahman Crescent Institute of Science & Technology, Chennai
-
-## Disclaimer
-
-This prototype supports human review. It does not predict accidents or provide validated road-safety conclusions.
+Python, FastAPI, Supabase Auth/Postgres, Ultralytics YOLO, OpenCV, ByteTrack, React, Vite, Leaflet, and OpenStreetMap.
