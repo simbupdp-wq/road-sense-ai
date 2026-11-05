@@ -10,7 +10,6 @@ export default defineConfig(({ mode }) => {
     server: {
       proxy: {
         '/api': { target: apiProxyTarget, changeOrigin: true },
-        '/results': { target: apiProxyTarget, changeOrigin: true },
       },
     },
     test: {

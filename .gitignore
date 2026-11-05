@@ -20,6 +20,9 @@ backend/uploads/*
 !backend/uploads/.gitkeep
 backend/results/*
 !backend/results/.gitkeep
+backend/data/*.sqlite3
+backend/data/*.sqlite3-shm
+backend/data/*.sqlite3-wal
 outputs/*
 !outputs/.gitkeep
 runs/

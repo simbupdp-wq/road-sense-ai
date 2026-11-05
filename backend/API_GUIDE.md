@@ -1,8 +1,16 @@
-# Local API guide
+# RoadSense API guide
 
-The API wraps the existing YOLO + ByteTrack pipeline and near-miss analysis. It
-accepts a video, creates an asynchronous analysis job, and exposes its annotated
-video, tracking output, and candidate events for human review.
+The FastAPI service verifies users with Supabase Auth, reads their Public/Authority role from the RLS-protected `profiles` table, and runs video uploads through YOLO, ByteTrack, and the near-miss candidate logic.
+
+## One-time Supabase setup
+
+Follow **Connect Supabase** in the repository's root `README.md`:
+
+1. Copy `.env.example` to `.env` and fill in `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`.
+2. Run the current `supabase/schema.sql` in the Supabase SQL Editor. Re-run it after pulling this location/review feature so the `road_safety_events` table and policies are created.
+3. Create a Public account, then promote the intended Authority account in the SQL Editor.
+
+The API needs only the project URL, publishable key, and the user's Supabase access token. Do not put a Supabase secret/service-role key in this project.
 
 ## Start (PowerShell, repository root)
 
@@ -11,36 +19,33 @@ py -3.12 -m venv .venv
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-# Install the correct PyTorch build separately using pytorch.org's selector.
+# Install the appropriate PyTorch build separately using pytorch.org's selector.
 python -m pip install -r backend\requirements.txt
-uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8001
 ```
 
-Open `http://127.0.0.1:8000/docs`. The frontend can call the API from Vite at
-`http://localhost:5173` or the configured local demo origin on port 9002.
+Open `http://127.0.0.1:8001/docs`. The frontend runs at `http://127.0.0.1:5173` and proxies `/api` to port 8001.
 
 ## Routes
 
 - `GET /api/health` — API availability.
-- `POST /api/analyze` — multipart form upload named `file`; optional `device`
-  value is `auto`, `cpu`, or `0`. Returns HTTP 202 and an `analysis_id`.
-- `GET /api/analyses/{analysis_id}` — poll `queued`, `processing`, `completed`,
-  or `failed` state. A completed response includes metadata and result URLs.
-- `GET /api/analyses/{analysis_id}/events` — returns candidate event list.
-- `/results/{analysis_id}/annotated.mp4` and
-  `/results/{analysis_id}/tracking.jsonl` — generated result files.
+- `POST /api/auth/register` — Public account signup; JSON: `name`, `email`, `password`.
+- `POST /api/auth/login` — Supabase password sign-in; JSON: `email`, `password`, and requested `role` (`public` or `authority`).
+- `GET /api/auth/me` — validate a Supabase bearer access token.
+- `POST /api/auth/refresh` — exchange a Supabase refresh token for a new session.
+- `POST /api/auth/logout` — sign out the current Supabase session.
+- `POST /api/analyze` — Authority-only multipart upload named `file`; optional `device` is `auto`, `cpu`, or `0`. Optional location fields are `camera_id`, `location_name`, `latitude`, `longitude`, and `location_source` (`camera` or `demo`). Supply location name and both coordinates together; the completed result includes `camera_location` for the Authority map. These values are supplied by the user and are not inferred by YOLO/ByteTrack.
+- `GET /api/analyses/{analysis_id}` — Authority-only job status and result.
+- `GET /api/analyses/{analysis_id}/events` — Authority-only candidate event list.
+- `POST /api/analyses/{analysis_id}/events/{event_id}/review` — Authority-only review body: `{"decision":"confirmed"}` or `{"decision":"dismissed"}`, optionally with a `note`.
+- `GET /api/hotspots` — Public list of grouped locations with authority-confirmed candidates.
+- `GET /api/analyses/{analysis_id}/video` — Authority-only annotated MP4 stream.
+- `GET /api/analyses/{analysis_id}/tracking` — Authority-only tracking JSONL download.
 
-Uploaded videos are limited to 200 MB, saved under generated names, and removed
-after processing. Only generated results are exposed as static files. Analysis
-state is held in memory for this local prototype and is cleared on API restart.
+The UI sends `Authorization: Bearer <Supabase access token>` to protected endpoints. Public users cannot upload or inspect analysis jobs. The server checks the account's role from Supabase on each protected request. Event review writes use the Authority user's token and RLS; the Public hotspot route can read only confirmed location columns.
 
-## Event integration handoff
+Uploads are limited to 200 MB, stored under generated names, and removed after processing. Analysis job state is held in memory and cleared when the API restarts. Authority review decisions and confirmed event locations are stored in Supabase. Generated video and tracking files remain on the API machine.
 
-The tracking pipeline writes one JSON object per detection to `tracking.jsonl`.
-The API converts records with assigned track IDs into the near-miss function's
-input fields (`frame`, `object_id`, `class`, `x`, and `y`), runs the event
-analysis, and saves its result to `backend/results/<analysis_id>/events.json`.
-The returned event list preserves the teammate's fields and adds an `event_id`,
-`review_status: "pending"`, and timestamps in seconds when FPS is available.
-Distance and risk are image-space heuristic cues, not verified physical
-distances or confirmed incidents.
+## Event processing
+
+The tracking pipeline writes one JSON object per detection to `tracking.jsonl`. The API converts records with assigned IDs into the near-miss function's input fields (`frame`, `object_id`, `class`, `x`, and `y`), runs the event analysis, and writes `backend/results/<analysis_id>/events.json`. Events preserve the teammate's fields and add an `event_id`, `review_status: "pending"`, and timestamps in seconds when FPS is available. Distances and risk labels are image-space heuristics, not verified physical distances or confirmed incidents.

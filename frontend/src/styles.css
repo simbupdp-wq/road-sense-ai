@@ -107,6 +107,13 @@ h1, h2, h3, h4, .workspace-brand strong, .login-brand strong { font-family: Inte
 .upload-panel > .panel-heading { margin-bottom: 13px; padding-bottom: 12px; border-bottom: 1px solid #EEE8E0; }
 .upload-panel > .panel-heading > svg { color: var(--burgundy); }
 .field-label { display: block; margin: 13px 0 7px; }
+.location-input { width: 100%; min-height: 38px; padding: 8px 10px; color: var(--charcoal); border: 1px solid #D8CDC0; border-radius: 6px; background: white; font: inherit; font-size: 11px; }
+.location-input:focus { outline: 2px solid #B9929A; outline-offset: 1px; }
+.optional-label { color: var(--muted); font-weight: 400; }
+.coordinate-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.coordinate-fields .field-label { margin-top: 11px; }
+.location-map-panel { min-width: 0; padding: 14px; }
+.location-map-panel .roadsense-map { height: 260px; min-height: 260px; }
 .dropzone { min-height: 140px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 7px; padding: 14px; color: var(--burgundy); border: 1px dashed #C7AEB0; border-radius: 8px; background: #FCF8F5; text-align: center; }
 .dropzone strong { color: var(--charcoal); font-size: 12px; }
 .dropzone span { color: var(--muted); font-size: 10px; }

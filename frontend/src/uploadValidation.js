@@ -1,10 +1,12 @@
-const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.mkv', '.avi', '.webm']);
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.mkv', '.avi']);
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 export function validateAnalysisUpload(file) {
   if (!file) return 'Select a video file.';
   const extension = file.name?.slice(file.name.lastIndexOf('.')).toLowerCase();
-  if (!VIDEO_EXTENSIONS.has(extension)) return 'Choose MP4, MOV, MKV, AVI, or WebM video.';
+  if (!VIDEO_EXTENSIONS.has(extension)) return 'Choose an MP4, MOV, MKV, or AVI video.';
   if (!Number.isFinite(file.size) || file.size <= 0) return 'Choose a non-empty video file.';
+  if (file.size > MAX_UPLOAD_BYTES) return 'Choose a video that is 200 MB or smaller.';
   return null;
 }
 

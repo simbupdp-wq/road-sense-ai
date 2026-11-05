@@ -5,5 +5,7 @@ numpy
 fastapi
 uvicorn[standard]
 python-multipart
+httpx
+python-dotenv
 # Optional test runner; the standard-library unittest suite needs no extra package.
 pytest

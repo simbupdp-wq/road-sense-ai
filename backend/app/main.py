@@ -1,26 +1,42 @@
-"""FastAPI adapter for the RoadWatch video-tracking pipeline.
+"""FastAPI adapter for RoadWatch analysis and Supabase authentication.
 
-This API runs locally for the hackathon demo. Analysis state is kept in memory,
-so restarting the server clears active job status (generated result files remain).
+Analysis job state is kept in memory, so restarting this API clears active job
+status. Supabase stores user accounts, sessions, and role profiles.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import threading
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
+from .supabase_auth import (
+    SupabaseAuthError,
+    get_user,
+    refresh_session,
+    list_confirmed_event_locations,
+    save_event_review,
+    sign_in,
+    sign_out,
+    sign_up,
+)
 from .config import TrackingConfig
 from .near_miss import analyze_near_misses
 from .tracking_pipeline import run_tracking
 
 ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT / ".env")
 UPLOADS = ROOT / "backend" / "uploads"
 RESULTS = ROOT / "backend" / "results"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
@@ -43,13 +59,88 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Only generated analysis outputs are public to the local frontend. Uploaded
-# source videos stay in backend/uploads and are never mounted as static files.
-app.mount("/results", StaticFiles(directory=RESULTS), name="results")
-
 analyses: dict[str, dict] = {}
 analysis_lock = threading.Lock()
 gpu_lock = threading.Lock()
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+class RegisterBody(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class LoginBody(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+    role: Literal["public", "authority"]
+
+
+class RefreshBody(BaseModel):
+    refresh_token: str = Field(min_length=1, max_length=4096)
+
+
+class ReviewBody(BaseModel):
+    decision: Literal["confirmed", "dismissed"]
+    note: str = Field(default="", max_length=500)
+
+
+def _auth_http_error(exc: SupabaseAuthError, *, login_error: bool = False) -> HTTPException:
+    if exc.status_code == 503:
+        return HTTPException(status_code=503, detail=str(exc))
+    if login_error and exc.status_code in {400, 401}:
+        provider_message = str(exc).lower()
+        if "not confirmed" in provider_message or "not_confirmed" in provider_message or "email_not_confirmed" in provider_message:
+            return HTTPException(
+                status_code=401,
+                detail="Confirm your email using the Supabase confirmation email, then sign in again.",
+            )
+        return HTTPException(status_code=401, detail="Email, password, or account type is incorrect.")
+    if exc.status_code in {400, 422}:
+        return HTTPException(status_code=400, detail=str(exc))
+    if exc.status_code == 429:
+        return HTTPException(status_code=429, detail="Too many sign-in attempts. Please wait and try again.")
+    if exc.status_code in {401, 403, 404}:
+        return HTTPException(status_code=exc.status_code, detail=str(exc))
+    if exc.status_code >= 500:
+        provider_message = str(exc).lower()
+        if "database error saving new user" in provider_message or "database error" in provider_message:
+            detail = (
+                "Supabase could not finish signup because a database operation failed. "
+                "Check the Supabase Auth and Postgres logs, then verify that supabase/schema.sql ran successfully."
+            )
+        else:
+            detail = (
+                f"Supabase returned an internal error (HTTP {exc.status_code}). "
+                "Check the Supabase Auth and Postgres logs for the signup attempt."
+            )
+        return HTTPException(status_code=502, detail=detail)
+    return HTTPException(
+        status_code=502,
+        detail=f"Supabase returned an unexpected authentication response (HTTP {exc.status_code}): {exc}",
+    )
+
+
+def current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="Sign in to continue.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        return get_user(credentials.credentials)
+    except SupabaseAuthError as exc:
+        raise _auth_http_error(exc, login_error=True) from exc
+
+
+def authority_user(user: dict = Depends(current_user)) -> dict:
+    if user["role"] != "authority":
+        raise HTTPException(status_code=403, detail="Authority access is required.")
+    return user
 
 
 def _public_result(analysis_id: str, metadata: dict) -> dict:
@@ -76,10 +167,11 @@ def _public_result(analysis_id: str, metadata: dict) -> dict:
             "duration_s": metadata.get("duration_seconds"),
             "frames_processed": metadata.get("frames_processed"),
         },
+        "camera_location": metadata.get("camera_location"),
         "metadata": metadata,
-        "annotated_video_url": f"/results/{analysis_id}/annotated.mp4",
-        "tracking_url": f"/results/{analysis_id}/tracking.jsonl",
-        "events_url": f"/results/{analysis_id}/events.json" if events_available else None,
+        "annotated_video_url": f"/api/analyses/{analysis_id}/video",
+        "tracking_url": f"/api/analyses/{analysis_id}/tracking",
+        "events_url": f"/api/analyses/{analysis_id}/events" if events_available else None,
         "events_available": events_available,
         "events": events,
         "limitations": (
@@ -113,7 +205,13 @@ def _near_miss_records(tracking_path: Path) -> list[dict]:
     return tracked_objects
 
 
-def _process_analysis(analysis_id: str, video_path: Path, original_name: str, device: str):
+def _process_analysis(
+    analysis_id: str,
+    video_path: Path,
+    original_name: str,
+    device: str,
+    camera_location: dict | None = None,
+):
     result_dir = RESULTS / analysis_id
     result_dir.mkdir(parents=True, exist_ok=True)
     with analysis_lock:
@@ -129,6 +227,8 @@ def _process_analysis(analysis_id: str, video_path: Path, original_name: str, de
         for index, event in enumerate(events, start=1):
             event["event_id"] = f"{analysis_id}-{index}"
             event["review_status"] = "pending"
+            if camera_location:
+                event["camera_location"] = camera_location
             if fps:
                 event["start_time_seconds"] = round(event["start_frame"] / fps, 3)
                 event["peak_time_seconds"] = round(event["peak_frame"] / fps, 3)
@@ -137,6 +237,7 @@ def _process_analysis(analysis_id: str, video_path: Path, original_name: str, de
             json.dumps(events, indent=2), encoding="utf-8"
         )
         metadata["input_name"] = original_name
+        metadata["camera_location"] = camera_location
         metadata["duration_seconds"] = round(
             metadata["frames_processed"] / metadata["fps"], 3
         ) if metadata.get("fps") else None
@@ -160,17 +261,85 @@ def health():
     return {"ok": True, "service": "roadwatch-api"}
 
 
+@app.post("/api/auth/register", status_code=201)
+def register_public_user(payload: RegisterBody):
+    email = payload.email.strip()
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
+    if not payload.name.strip():
+        raise HTTPException(status_code=422, detail="Name cannot be empty.")
+    try:
+        return sign_up(email, payload.password, payload.name)
+    except SupabaseAuthError as exc:
+        raise _auth_http_error(exc) from exc
+
+
+@app.post("/api/auth/login")
+def login(payload: LoginBody):
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", payload.email.strip()):
+        raise HTTPException(status_code=401, detail="Email, password, or account type is incorrect.")
+    try:
+        return sign_in(payload.email, payload.password, payload.role)
+    except SupabaseAuthError as exc:
+        raise _auth_http_error(exc, login_error=True) from exc
+
+
+@app.get("/api/auth/me")
+def who_am_i(user: dict = Depends(current_user)):
+    return {"user": user}
+
+
+@app.post("/api/auth/refresh")
+def refresh_auth_session(payload: RefreshBody):
+    try:
+        return refresh_session(payload.refresh_token)
+    except SupabaseAuthError as exc:
+        raise _auth_http_error(exc, login_error=True) from exc
+
+
+@app.post("/api/auth/logout")
+def logout(credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)):
+    if credentials is not None and credentials.scheme.lower() == "bearer":
+        try:
+            sign_out(credentials.credentials)
+        except SupabaseAuthError:
+            # Clear the browser session even when Supabase has already expired it.
+            pass
+    return {"ok": True}
+
+
 @app.post("/api/analyze", status_code=202)
 async def analyze_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     device: str = "auto",
+    camera_id: str | None = Form(None, max_length=80),
+    location_name: str | None = Form(None, max_length=120),
+    latitude: float | None = Form(None),
+    longitude: float | None = Form(None),
+    location_source: Literal["camera", "demo"] = Form("demo"),
+    _user: dict = Depends(authority_user),
 ):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
         raise HTTPException(400, "Upload an MP4, MOV, AVI, or MKV video.")
     if device not in {"auto", "cpu", "0"}:
         raise HTTPException(400, "device must be auto, cpu, or 0.")
+
+    location_values_supplied = any((camera_id, location_name, latitude is not None, longitude is not None))
+    camera_location = None
+    if location_values_supplied:
+        if not location_name or not location_name.strip() or latitude is None or longitude is None:
+            raise HTTPException(422, "Provide a location name, latitude, and longitude together.")
+        if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+            raise HTTPException(422, "Latitude must be between -90 and 90 and longitude between -180 and 180.")
+        camera_location = {
+            "camera_id": camera_id.strip() if camera_id else None,
+            "location_name": location_name.strip(),
+            "latitude": latitude,
+            "longitude": longitude,
+            "source": location_source,
+        }
 
     analysis_id = uuid4().hex[:12]
     video_path = UPLOADS / f"{analysis_id}{suffix}"
@@ -199,13 +368,47 @@ async def analyze_video(
     }
     background_tasks.add_task(
         _process_analysis, analysis_id, video_path,
-        Path(file.filename or "video").name, device,
+        Path(file.filename or "video").name, device, camera_location,
     )
     return {"analysis_id": analysis_id, "status": "queued"}
 
 
+@app.get("/api/hotspots")
+def get_confirmed_hotspots():
+    """Public map feed; only authority-confirmed candidate events are included."""
+    try:
+        rows = list_confirmed_event_locations()
+    except SupabaseAuthError as exc:
+        raise _auth_http_error(exc) from exc
+    grouped: dict[tuple, dict] = {}
+    for row in rows:
+        latitude = row.get("latitude")
+        longitude = row.get("longitude")
+        if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
+            continue
+        key = (
+            row.get("camera_id") or "",
+            row.get("location_name") or "",
+            round(float(latitude), 6),
+            round(float(longitude), 6),
+            row.get("location_source") or "demo",
+        )
+        hotspot = grouped.setdefault(key, {
+            "id": f"{key[0]}:{key[2]}:{key[3]}",
+            "cameraId": key[0] or None,
+            "locationName": key[1],
+            "latitude": key[2],
+            "longitude": key[3],
+            "source": key[4],
+            "reviewStatus": "confirmed",
+            "confirmedEventCount": 0,
+        })
+        hotspot["confirmedEventCount"] += 1
+    return list(grouped.values())
+
+
 @app.get("/api/analyses/{analysis_id}")
-def get_analysis(analysis_id: str):
+def get_analysis(analysis_id: str, _user: dict = Depends(authority_user)):
     analysis = analyses.get(analysis_id)
     if analysis is None:
         raise HTTPException(404, "Analysis not found. It may have been cleared by a server restart.")
@@ -218,7 +421,7 @@ def get_analysis(analysis_id: str):
 
 
 @app.get("/api/analyses/{analysis_id}/events")
-def get_analysis_events(analysis_id: str):
+def get_analysis_events(analysis_id: str, _user: dict = Depends(authority_user)):
     analysis = analyses.get(analysis_id)
     if analysis is None:
         raise HTTPException(404, "Analysis not found.")
@@ -231,3 +434,74 @@ def get_analysis_events(analysis_id: str):
         "events": result["events"],
         "message": None if result["events_available"] else "Event output is unavailable for this analysis.",
     }
+
+
+@app.post("/api/analyses/{analysis_id}/events/{event_id}/review")
+def review_analysis_event(
+    analysis_id: str,
+    event_id: str,
+    payload: ReviewBody,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    _user: dict = Depends(authority_user),
+):
+    if credentials is None:
+        raise HTTPException(401, "Sign in again before saving this review.")
+    with analysis_lock:
+        analysis = analyses.get(analysis_id)
+        if analysis is None:
+            raise HTTPException(404, "Analysis not found. It may have been cleared by a server restart.")
+        if analysis.get("status") != "completed" or not analysis.get("result"):
+            raise HTTPException(409, "Wait until the analysis has completed before reviewing events.")
+        events = analysis["result"].get("events", [])
+        event = next((item for item in events if str(item.get("event_id")) == event_id), None)
+        if event is None:
+            raise HTTPException(404, "Candidate event not found.")
+        if event.get("review_status") != "pending":
+            raise HTTPException(409, "This candidate already has a review decision.")
+        camera_location = analysis["result"].get("camera_location")
+        if not isinstance(camera_location, dict):
+            raise HTTPException(422, "This analysis has no supplied camera location to publish.")
+        updated_event = {**event, "review_status": payload.decision, "review_note": payload.note.strip()}
+        try:
+            save_event_review(
+                analysis_id,
+                updated_event,
+                camera_location,
+                credentials.credentials,
+            )
+        except SupabaseAuthError as exc:
+            raise _auth_http_error(exc) from exc
+        event.update(updated_event)
+        result_dir = RESULTS / analysis_id
+        (result_dir / "events.json").write_text(json.dumps(events, indent=2), encoding="utf-8")
+    return {"analysis_id": analysis_id, "event": event}
+
+
+@app.get("/api/analyses/{analysis_id}/video")
+def get_analysis_video(analysis_id: str, _user: dict = Depends(authority_user)):
+    analysis = analyses.get(analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found.")
+    if analysis["status"] != "completed":
+        raise HTTPException(status_code=409, detail="Analysis has not completed yet.")
+    video_path = RESULTS / analysis_id / "annotated.mp4"
+    if not video_path.is_file():
+        raise HTTPException(status_code=404, detail="Annotated video is unavailable.")
+    return FileResponse(video_path, media_type="video/mp4", filename="annotated.mp4")
+
+
+@app.get("/api/analyses/{analysis_id}/tracking")
+def get_analysis_tracking(analysis_id: str, _user: dict = Depends(authority_user)):
+    analysis = analyses.get(analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found.")
+    if analysis["status"] != "completed":
+        raise HTTPException(status_code=409, detail="Analysis has not completed yet.")
+    tracking_path = RESULTS / analysis_id / "tracking.jsonl"
+    if not tracking_path.is_file():
+        raise HTTPException(status_code=404, detail="Tracking output is unavailable.")
+    return FileResponse(
+        tracking_path,
+        media_type="application/x-ndjson",
+        filename="tracking.jsonl",
+    )

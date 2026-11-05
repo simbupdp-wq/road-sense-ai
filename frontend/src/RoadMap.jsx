@@ -38,7 +38,7 @@ function validRoute(coordinates) {
       && point[0] >= -90 && point[0] <= 90 && point[1] >= -180 && point[1] <= 180);
 }
 
-export default function RoadMap({ locations = [], routeCoordinates = [], routeLabel = '', active = true, onSelect }) {
+export default function RoadMap({ locations = [], routeCoordinates = [], routeLabel = '', active = true, onSelect, ariaLabel = 'OpenStreetMap with locations' }) {
   const mapped = getMapReadyLocations(locations);
   if (!mapped.length) {
     return <div className="map-empty" role="status">
@@ -54,7 +54,7 @@ export default function RoadMap({ locations = [], routeCoordinates = [], routeLa
   ];
   const routeIsValid = validRoute(routeCoordinates);
 
-  return <div className="roadsense-map" role="region" aria-label="OpenStreetMap with confirmed hotspot locations">
+  return <div className="roadsense-map" role="region" aria-label={ariaLabel}>
     <MapContainer center={center} zoom={mapped.length === 1 ? 14 : 12} scrollWheelZoom={false}
       style={{ width: '100%', height: '100%' }}>
       <MapResizeObserver active={active} />

@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, FileVideo2, RotateCcw, Upload, X } from 'lucide-react';
-import { analyzeVideo, getAnalysisStatus, getAnnotatedVideoUrl, getCandidateEvents } from './api.js';
+import { analyzeVideo, getAnalysisStatus, getCandidateEvents, loadAnnotatedVideo, sendReviewDecision } from './api.js';
 import { monitorAnalysis } from './analysisPolling.js';
-import { createDemoReviewAdapter } from './demoReviewAdapter.js';
 import { formatFileSize, validateAnalysisUpload } from './uploadValidation.js';
 import { formatTime } from './format.js';
 import { getEventSeekSeconds } from './timeline.js';
+import { useAuth } from './auth.jsx';
+import RoadMap from './RoadMap.jsx';
 
 function displayValue(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -38,13 +39,19 @@ function getStatusFrameRate(statusData) {
 }
 
 function eventReviewState(event, localReview) {
-  if (localReview?.decision === 'confirm') return 'Confirmed · demo';
-  if (localReview?.decision === 'dismiss') return 'Dismissed · demo';
+  if (localReview?.decision === 'confirm') return 'Confirmed';
+  if (localReview?.decision === 'dismiss') return 'Dismissed';
   return event.review_status || 'pending';
 }
 
 export default function AuthorityView({ active }) {
+  const { session } = useAuth();
   const [file, setFile] = useState(null);
+  const [cameraId, setCameraId] = useState('');
+  const [locationName, setLocationName] = useState('');
+  const [latitude, setLatitude] = useState('');
+  const [longitude, setLongitude] = useState('');
+  const [locationSource, setLocationSource] = useState('demo');
   const [analysisId, setAnalysisId] = useState(null);
   const [statusData, setStatusData] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -64,10 +71,9 @@ export default function AuthorityView({ active }) {
   const [reviewMessage, setReviewMessage] = useState('');
   const [reviewError, setReviewError] = useState('');
   const [videoError, setVideoError] = useState('');
+  const [videoUrl, setVideoUrl] = useState(null);
   const videoRef = useRef(null);
   const fileInputRef = useRef(null);
-  const reviewAdapter = useRef(null);
-  if (!reviewAdapter.current) reviewAdapter.current = createDemoReviewAdapter();
 
   useEffect(() => {
     if (!active || !analysisId) return undefined;
@@ -76,8 +82,8 @@ export default function AuthorityView({ active }) {
     setPollPaused(false);
     monitorAnalysis({
       analysisId,
-      getStatus: getAnalysisStatus,
-      getEvents: getCandidateEvents,
+      getStatus: (id, options) => getAnalysisStatus(id, { ...options, token: session?.accessToken }),
+      getEvents: (id, options) => getCandidateEvents(id, { ...options, token: session?.accessToken }),
       signal: controller.signal,
       onStatus: (status) => {
         setStatusData(status);
@@ -107,11 +113,15 @@ export default function AuthorityView({ active }) {
       }
     });
     return () => controller.abort();
-  }, [active, analysisId, pollRetry]);
+  }, [active, analysisId, pollRetry, session?.accessToken]);
 
   const selectedEvent = selectedIndex >= 0 ? events[selectedIndex] : null;
   const selectedKey = selectedEvent?.event_id == null ? null : String(selectedEvent.event_id);
-  const selectedReview = selectedKey ? reviewByEvent[selectedKey] : null;
+  const selectedReview = selectedKey
+    ? reviewByEvent[selectedKey] || (selectedEvent?.review_status && selectedEvent.review_status !== 'pending'
+      ? { decision: selectedEvent.review_status === 'confirmed' ? 'confirm' : 'dismiss' }
+      : null)
+    : null;
   const frameRate = getStatusFrameRate(statusData);
   const visibleEvents = useMemo(() => events.map((event, index) => ({ event, index })).filter(({ event }) => {
     const local = event.event_id == null ? null : reviewByEvent[String(event.event_id)];
@@ -121,15 +131,63 @@ export default function AuthorityView({ active }) {
     if (filter === 'dismissed') return state === 'dismissed' || state === 'dismiss';
     return true;
   }), [events, filter, reviewByEvent]);
-  const videoUrl = getAnnotatedVideoUrl(statusData);
   const serverStatus = statusData?.status;
   const shownStatus = uploading ? 'Uploading' : serverStatus || (analysisId ? 'Waiting for status' : 'No analysis submitted');
   const result = statusData?.result || null;
   const metadata = result?.metadata || {};
+  const enteredLatitude = latitude.trim() === '' ? NaN : Number(latitude);
+  const enteredLongitude = longitude.trim() === '' ? NaN : Number(longitude);
+  const enteredCameraLocation = locationName.trim() && Number.isFinite(enteredLatitude) && Number.isFinite(enteredLongitude)
+    ? {
+      id: 'camera-location-preview',
+      cameraId: cameraId.trim() || undefined,
+      locationName: locationName.trim(),
+      latitude: enteredLatitude,
+      longitude: enteredLongitude,
+      source: locationSource,
+    }
+    : null;
+  const resultCameraLocation = result?.camera_location
+    ? {
+      id: result.analysis_id || 'analyzed-camera-location',
+      cameraId: result.camera_location.camera_id,
+      locationName: result.camera_location.location_name,
+      latitude: result.camera_location.latitude,
+      longitude: result.camera_location.longitude,
+      source: result.camera_location.source,
+    }
+    : null;
+  const cameraLocationForMap = resultCameraLocation || enteredCameraLocation;
   const eventsState = eventsLoading ? 'Candidate events are loading…'
     : eventsError ? 'Candidate events could not be loaded.'
       : events.length ? `${events.length} candidate ${events.length === 1 ? 'event' : 'events'}`
         : serverStatus === 'completed' ? 'No candidate events were returned.' : 'No candidate events loaded.';
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let objectUrl = null;
+    setVideoUrl(null);
+    setVideoError('');
+    if (statusData?.status !== 'completed' || !session?.accessToken) {
+      return () => controller.abort();
+    }
+    loadAnnotatedVideo(statusData, session.accessToken, { signal: controller.signal })
+      .then((url) => {
+        if (controller.signal.aborted) {
+          if (url) URL.revokeObjectURL(url);
+          return;
+        }
+        objectUrl = url;
+        setVideoUrl(url);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setVideoError(error.message);
+      });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [analysisId, statusData?.status, statusData?.result?.annotated_video_url, session?.accessToken]);
 
   const clearAnalysisData = () => {
     setAnalysisId(null);
@@ -161,11 +219,31 @@ export default function AuthorityView({ active }) {
       setUploadError(validationError);
       return;
     }
+    if (!locationName.trim()) {
+      setUploadError('Enter the camera or junction name for this footage.');
+      return;
+    }
+    if (!Number.isFinite(enteredLatitude) || !Number.isFinite(enteredLongitude)
+      || enteredLatitude < -90 || enteredLatitude > 90
+      || enteredLongitude < -180 || enteredLongitude > 180) {
+      setUploadError('Enter valid coordinates: latitude −90 to 90 and longitude −180 to 180.');
+      return;
+    }
     clearAnalysisData();
     setUploading(true);
     setUploadError('');
     try {
-      const accepted = await analyzeVideo({ file });
+      const accepted = await analyzeVideo({
+        file,
+        token: session?.accessToken,
+        cameraLocation: {
+          cameraId,
+          locationName: locationName.trim(),
+          latitude: enteredLatitude,
+          longitude: enteredLongitude,
+          source: locationSource,
+        },
+      });
       setAnalysisId(accepted.analysis_id);
       setStatusData({ analysis_id: accepted.analysis_id, status: accepted.status });
     } catch (error) {
@@ -190,15 +268,25 @@ export default function AuthorityView({ active }) {
     setReviewNote('');
   };
 
-  const recordLocalReview = async (decision) => {
+  const recordReview = async (decision) => {
     if (!selectedKey || !selectedEvent || reviewBusy || selectedReview) return;
     setReviewBusy(true);
     setReviewMessage('');
     setReviewError('');
     try {
-      const review = await reviewAdapter.current.record({ eventId: selectedKey, decision, note: reviewNote });
+      const saved = await sendReviewDecision({
+        analysisId,
+        eventId: selectedKey,
+        decision: decision === 'confirm' ? 'confirmed' : 'dismissed',
+        note: reviewNote,
+        token: session?.accessToken,
+      });
+      const review = { eventId: selectedKey, decision, note: reviewNote };
       setReviewByEvent((current) => ({ ...current, [selectedKey]: review }));
-      setReviewMessage('Demo only — not saved to the API.');
+      setEvents((current) => current.map((event) => String(event.event_id) === selectedKey ? saved.event : event));
+      setReviewMessage(decision === 'confirm'
+        ? 'Decision saved. This location can now appear on the Public map.'
+        : 'Dismissal saved; this location will not appear on the Public map.');
     } catch (error) {
       setReviewError(error.message);
     } finally {
@@ -233,10 +321,25 @@ export default function AuthorityView({ active }) {
         }}>
           <Upload size={20} aria-hidden="true" />
           <strong>Drop a video here or browse</strong>
-          <span>MP4, MOV, MKV, AVI, or WebM</span>
+          <span>MP4, MOV, MKV, or AVI · up to 200 MB</span>
           <input ref={fileInputRef} id="roadsense-video" className="file-input" type="file" aria-label="Video file"
-            accept=".mp4,.mov,.mkv,.avi,.webm,video/mp4,video/quicktime,video/x-matroska,video/x-msvideo,video/webm" onChange={chooseFile} />
+            accept=".mp4,.mov,.mkv,.avi,video/mp4,video/quicktime,video/x-matroska,video/x-msvideo" onChange={chooseFile} />
         </div>
+        <p className="field-help">YOLO cannot infer GPS from normal footage. Add the known camera location here; these details are sent with the video.</p>
+        <label className="field-label" htmlFor="camera-id">Camera ID <span className="optional-label">(optional)</span></label>
+        <input className="location-input" id="camera-id" type="text" maxLength={80} value={cameraId} onChange={(event) => setCameraId(event.target.value)} placeholder="CAM-01" />
+        <label className="field-label" htmlFor="camera-location-name">Camera or junction name</label>
+        <input className="location-input" id="camera-location-name" type="text" maxLength={120} value={locationName} onChange={(event) => setLocationName(event.target.value)} placeholder="Example: Main Street crossing" required />
+        <div className="coordinate-fields">
+          <div><label className="field-label" htmlFor="camera-latitude">Latitude</label><input className="location-input" id="camera-latitude" type="number" min="-90" max="90" step="any" value={latitude} onChange={(event) => setLatitude(event.target.value)} placeholder="13.0827" required /></div>
+          <div><label className="field-label" htmlFor="camera-longitude">Longitude</label><input className="location-input" id="camera-longitude" type="number" min="-180" max="180" step="any" value={longitude} onChange={(event) => setLongitude(event.target.value)} placeholder="80.2707" required /></div>
+        </div>
+        <label className="field-label" htmlFor="location-source">Coordinate type</label>
+        <select className="location-input" id="location-source" value={locationSource} onChange={(event) => setLocationSource(event.target.value)}>
+          <option value="demo">Demo coordinates (simulated)</option>
+          <option value="camera">Actual camera location</option>
+        </select>
+        {locationSource === 'demo' && <p className="field-help">Demo coordinates are illustrative only and must not be presented as a real incident location.</p>}
         {file && <div className="file-summary"><FileVideo2 size={18} /><span><strong>{file.name}</strong><small>{formatFileSize(file.size)}</small></span><button className="icon-button" type="button" aria-label="Remove selected video" onClick={() => { setFile(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}><X size={16} /></button></div>}
         <p className="field-help">This upload is analyzed for candidate near-miss events that require human review.</p>
         {uploadError && <div className="inline-error" role="alert"><AlertTriangle size={16} /><span>{uploadError}</span></div>}
@@ -248,6 +351,13 @@ export default function AuthorityView({ active }) {
       </form>
 
       <section className="analysis-workspace">
+        <section className="location-map-panel panel" aria-label="Camera location map">
+          <div className="panel-heading"><div><p className="eyebrow">CAMERA LOCATION</p><h2>Map preview</h2></div></div>
+          {cameraLocationForMap ? <>
+            <RoadMap locations={[cameraLocationForMap]} active={active} ariaLabel="OpenStreetMap camera location preview" />
+            <p className="field-help">{cameraLocationForMap.source === 'demo' ? 'Illustrative demo point — not verified camera or incident coordinates.' : 'Location is supplied camera metadata; it is not inferred by YOLO or ByteTrack.'}</p>
+          </> : <p className="map-empty-copy">Enter a location name and coordinates to preview the camera point here.</p>}
+        </section>
         <section className="video-panel panel" aria-label="Annotated video">
           <div className="panel-heading"><div><p className="eyebrow">EVIDENCE PLAYER</p><h2>Annotated video</h2></div>{serverStatus && <span className={`status-chip status-${serverStatus}`}>{serverStatus}</span>}</div>
           {videoUrl ? <>
@@ -284,7 +394,7 @@ export default function AuthorityView({ active }) {
       {eventsMessage && <p className="field-help" role="status">{eventsMessage}</p>}
       {eventsError && <div className="inline-error" role="alert"><AlertTriangle size={16} /><span>{eventsError}</span><button type="button" className="text-link" onClick={() => setPollRetry((value) => value + 1)}>Retry event request</button></div>}
       <div className="event-filters" role="group" aria-label="Filter candidate events">
-        {[['all', 'All'], ['needs-review', 'Needs review'], ['confirmed', 'Confirmed · demo'], ['dismissed', 'Dismissed · demo']].map(([value, label]) => <button key={value} type="button" className={filter === value ? 'active' : ''} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>)}
+        {[['all', 'All'], ['needs-review', 'Needs review'], ['confirmed', 'Confirmed'], ['dismissed', 'Dismissed']].map(([value, label]) => <button key={value} type="button" className={filter === value ? 'active' : ''} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>)}
       </div>
       {events.length === 0 && !eventsLoading && !eventsError && <div className="empty-candidates" role="status"><strong>{serverStatus === 'completed' ? 'No candidate events were returned.' : 'No candidate events loaded.'}</strong><span>A blank event list does not establish that the footage was risk-free.</span></div>}
       {eventsLoading && <div className="empty-candidates" role="status"><span>Loading candidate events…</span></div>}
@@ -312,13 +422,13 @@ export default function AuthorityView({ active }) {
               <span className={`risk-badge risk-${String(selectedEvent.risk || 'unavailable').toLowerCase()}`}>{displayValue(selectedEvent.risk) ? `Risk ${selectedEvent.risk}` : 'Risk unavailable'}</span></div>
             <dl className="event-fields">{eventFields(selectedEvent).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
             <div className="review-form">
-              <label htmlFor="review-note">Reviewer note (local demo only)</label>
+              <label htmlFor="review-note">Reviewer note (optional)</label>
               <textarea id="review-note" value={reviewNote} maxLength={500} onChange={(event) => setReviewNote(event.target.value)} placeholder="Optional note" />
               <div className="review-actions">
-                <button className="button button-confirm" type="button" disabled={reviewBusy || Boolean(selectedReview)} onClick={() => recordLocalReview('confirm')}><Check size={16} />Confirm</button>
-                <button className="button button-dismiss" type="button" disabled={reviewBusy || Boolean(selectedReview)} onClick={() => recordLocalReview('dismiss')}><X size={16} />Dismiss</button>
+                <button className="button button-confirm" type="button" disabled={reviewBusy || Boolean(selectedReview)} onClick={() => recordReview('confirm')}><Check size={16} />Confirm</button>
+                <button className="button button-dismiss" type="button" disabled={reviewBusy || Boolean(selectedReview)} onClick={() => recordReview('dismiss')}><X size={16} />Dismiss</button>
               </div>
-              <p className="local-only-note">Demo only — not saved to the API. Human review here is not official or legal incident verification.</p>
+              <p className="local-only-note">Confirming publishes this camera point on the Public map for this running demo. Review is not official or legal incident verification.</p>
               {reviewMessage && <p className="feedback-success" role="status">{reviewMessage}</p>}
               {reviewError && <p className="feedback-error" role="alert">{reviewError}</p>}
             </div>

@@ -31,7 +31,7 @@ export default function PublicView({ active }) {
     try {
       const response = await getConfirmedHotspots();
       if (!Array.isArray(response)) throw new Error('The hotspot service did not return a list. Confirm its response shape with the API teammate.');
-      // The service adapter must map its confirmed-only response to this view model.
+      // The API returns only confirmed rows allowed by the Supabase RLS policy.
       const confirmedOnly = response.filter((location) => location?.reviewStatus === 'confirmed');
       setApiLocations(confirmedOnly);
       setSelectedId(confirmedOnly[0]?.id || null);
@@ -65,7 +65,7 @@ export default function PublicView({ active }) {
         <h2>Confirmed hotspots</h2>
         <p className="section-copy">Only reviewed, confirmed events belong on this public map. Candidate events are not shown as confirmed hotspots.</p>
       </div>
-      {showDemo && <span className="demo-banner" role="status">DEMO DATA · NOT REAL INCIDENTS</span>}
+      {(showDemo || (source === 'api' && locations.some((location) => location.source === 'demo'))) && <span className="demo-banner" role="status">DEMO COORDINATES · NOT VERIFIED LOCATIONS</span>}
     </div>
 
     <div className="public-actions">
@@ -78,9 +78,10 @@ export default function PublicView({ active }) {
     </div>
 
     {error && <div className="notice notice-error" role="alert"><AlertTriangle size={17} /><span>{error}</span></div>}
-    {source === 'empty' && <div className="notice notice-info" role="status"><MapPin size={17} /><span><strong>Confirmed road-safety hotspots will appear here after authority review.</strong> The current API does not provide confirmed-hotspot data.</span></div>}
+    {source === 'empty' && <div className="notice notice-info" role="status"><MapPin size={17} /><span><strong>Confirmed road-safety hotspots appear here after authority review.</strong> Select “Check hotspot service” to load locations.</span></div>}
     {source === 'api' && locations.length === 0 && <div className="notice notice-info" role="status"><MapPin size={17} /><span>No confirmed locations were returned. Candidate records are not included.</span></div>}
     {source === 'demo' && <p className="demo-explanation">These sample points and counts are illustrative. They do not represent real incidents, cameras, or verified locations.</p>}
+    {source === 'api' && locations.some((location) => location.source === 'demo') && <p className="demo-explanation">Some confirmed events use simulated coordinates for demonstration and do not identify a real camera or incident location.</p>}
 
     <div className="public-workspace">
       <section className="public-map-panel panel" aria-label="Hotspot map and list">

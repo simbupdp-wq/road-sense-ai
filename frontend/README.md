@@ -1,70 +1,55 @@
 # RoadSense frontend
 
-RoadSense is a road-safety video review prototype. The frontend has separate Public and Authority sign-in routes, protected workspaces, and an Authority upload/review flow. Login is prototype-only; it does not authenticate a real person. Backend authorization is still required before production use.
+RoadSense is a road-safety video review prototype with separate Public and Authority workspaces. The UI uses the FastAPI authentication API; it no longer accepts arbitrary email/password values as a local-only sign-in.
 
 ## Start locally
 
-In PowerShell:
+Start the API from the repository root first. In a second PowerShell window:
 
 ```powershell
 cd .\frontend
-npm install
+npm ci
 if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
 npm run dev
 ```
 
-Open the Vite URL (normally `http://127.0.0.1:5173`). The sign-in routes are `/public/login` and `/authority/login`. Any syntactically valid email and non-empty password enters the corresponding local prototype workspace. The mock session is stored in `sessionStorage`; it is not a security boundary.
+Open the Vite URL (normally `http://127.0.0.1:5173`). The local Vite server proxies `/api` to the API target in `.env.local`.
 
-Set `VITE_DEV_PROXY_TARGET` in `.env.local` if the API server is not at `http://127.0.0.1:8001`. Vite proxies both `/api` and `/results` to that target. `VITE_API_BASE_URL` can be set to a deployed API origin; leave it blank for the local same-origin proxy.
+## Accounts and sign-in
 
-## Routes and role behavior
+- A visitor can create a **Public** account from `/public/login`. Public registration never accepts an Authority role.
+- **Authority** accounts are promoted by the project administrator in Supabase SQL Editor after signup. Authority users then sign in at `/authority/login`.
+- The UI stores Supabase access and refresh tokens in the current browser tab's `sessionStorage`, asks the API to validate them when the page is reopened, refreshes short-lived access tokens, and signs out when the user logs out.
+- The API, rather than the UI route guard, enforces which role may upload videos and read analysis results.
 
-| Route | Purpose |
-|---|---|
-| `/public/login` | Public prototype login |
-| `/authority/login` | Authority prototype login |
-| `/public` | Public hotspot and route-demo workspace |
-| `/authority` and nested paths | Authority video review workspace |
+## API contract used by this frontend
 
-Unauthenticated visits to workspaces redirect to the matching login. A Public session cannot open Authority routes, and an Authority session cannot open Public routes. Logout clears the prototype session and returns to that role's login. These frontend guards do not replace server-side authorization.
-
-## API contract used by the frontend
-
-The Authority workspace follows the Praveen API contract supplied for this UI:
-
-| Method | Endpoint | Frontend behavior |
+| Method | Endpoint | Purpose |
 |---|---|---|
-| `POST` | `/api/analyze` | Sends multipart field `file` only; no Camera ID or device selector. Expects top-level `analysis_id` and `status` (normally `queued`). |
-| `GET` | `/api/analyses/{analysis_id}` | Polls `queued`, `processing`, `completed`, or `failed`. On completion reads `result.annotated_video_url`, `result.metadata.fps`, optional metadata, and optional `result.events`. |
-| `GET` | `/api/analyses/{analysis_id}/events` | Reads the wrapper object and validates `events` is an array. `events_available: false` and `message` are shown honestly. `result.events` is used as a fallback if provided by the completed status response. |
+| `POST` | `/api/auth/register` | Creates a Public account through Supabase Auth. JSON: `name`, `email`, `password`. Email confirmation may be required before sign-in. |
+| `POST` | `/api/auth/login` | Signs in an existing Public or Authority account. JSON: `email`, `password`, `role`. |
+| `GET` | `/api/auth/me` | Validates the bearer token and returns the signed-in user. |
+| `POST` | `/api/auth/refresh` | Exchanges the refresh token and returns a new Supabase session. |
+| `POST` | `/api/auth/logout` | Revokes the current bearer session. |
+| `POST` | `/api/analyze` | Authority-only. Sends multipart field `file`; returns `analysis_id` and `status`. |
+| `GET` | `/api/analyses/{analysis_id}` | Authority-only. Polls `queued`, `processing`, `completed`, or `failed`. |
+| `GET` | `/api/analyses/{analysis_id}/events` | Authority-only. Returns the candidate event list. |
+| `GET` | `/api/analyses/{analysis_id}/video` | Authority-only. Streams the annotated video after the frontend sends its bearer token. |
+| `GET` | `/api/analyses/{analysis_id}/tracking` | Authority-only. Downloads the tracking JSONL output. |
 
-The listed event fields are displayed when present: `event_id`, `object_ids`, `classes`, `risk`, `minimum_distance_pixels`, `status`, `review_status`, `start_time_seconds`, `peak_time_seconds`, and `end_time_seconds`. Every record is labeled **Candidate near-miss — requires human review**. `risk` is shown as the API-provided label; it is not presented as accident probability or validated severity. Event selection seeks to `peak_time_seconds`; `peak_frame` is used only if `result.metadata.fps` is a valid positive number.
+On completion, the status response contains `result.annotated_video_url`, `result.metadata`, and `result.events`. Event rows are **candidate near-misses requiring human review**, not confirmed accidents or official decisions.
 
-Relative `result.annotated_video_url` values resolve against the configured API origin. In local development, `/results/...` is proxied to the API server. The player shows an unavailable/error state if the API omits the URL or the media cannot play.
+## Current prototype boundaries
 
-### Current backend compatibility note
+- The Public map loads only authority-confirmed locations from the API. Demo coordinates remain visibly labeled; route optimization is still a demonstration only.
+- Authority review decisions and confirmed hotspot locations persist in Supabase. Analysis job status is still temporary API memory and disappears when the API restarts.
+- Analysis job status is held in API memory, so a backend restart clears that status. Supabase owns account credentials, profiles, and sessions; generated video files remain on the API machine.
 
-The checked-in backend implementation inspected during this UI change currently exposes a different contract (`POST /api/analyses` with `video` and `config_json`, among other status/result shapes). This frontend intentionally does **not** change or adapt Praveen's contract. For end-to-end upload, run the API service that implements the Praveen contract above. No real-video API test was claimed against the mismatched checked-in service.
-
-## Prototype-only features and unavailable data
-
-- Public confirmed hotspots are unavailable because the API has no confirmed-hotspot endpoint. The workspace starts with the message: “Confirmed road-safety hotspots will appear here after authority review.” Sample locations and their route line appear only after the explicit **Show demo hotspots** action, and are labeled **Demo Data — not real incidents**.
-- The Demo Route Suggestion is a visual/list illustration. It is not navigation, route optimization, live traffic, or a safety recommendation.
-- Confirm and Dismiss actions are local demo state only. The UI says **Demo only — not saved to the API**; no review endpoint is called.
-- A candidate event is not a confirmed accident or official incident decision. An empty list does not establish that the footage was risk-free.
-- Authentication, detection, tracking, near-miss analysis, collision analysis, and camera-motion compensation are not implemented by the frontend.
-
-## Design and mapping
-
-The interface uses the RoadSense burgundy, beige, ivory, and sage-gray palette. Leaflet 1.9 and React Leaflet 4 are used with React 18. OpenStreetMap attribution is visible; the map uses real service coordinates only when an API contract supplies them, otherwise the explicit demo adapter or empty state is shown. Leaflet CSS is imported from `src/main.jsx`; marker icons use a bundled `divIcon`.
-
-## Checks
-
-From `frontend/`:
+## Frontend checks
 
 ```powershell
 npm test
 npm run build
 ```
 
-This package currently defines no lint or type-check scripts.
+The login-related checks must use database accounts from the running API; valid-looking text alone does not authenticate.

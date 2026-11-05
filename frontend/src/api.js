@@ -30,15 +30,63 @@ async function requestJson(path, options = {}) {
   return payload;
 }
 
+function bearerHeaders(token, headers = {}) {
+  if (typeof token !== 'string' || !token.trim()) throw new Error('Your sign-in session is missing. Please sign in again.');
+  return { ...headers, Authorization: `Bearer ${token}` };
+}
+
+export async function registerPublicUser({ name, email, password }) {
+  return requestJson('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, email, password }),
+  });
+}
+
+export async function loginUser({ email, password, role }) {
+  return requestJson('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, role }),
+  });
+}
+
+export async function getCurrentUser(token) {
+  return requestJson('/api/auth/me', { headers: bearerHeaders(token) });
+}
+
+export async function refreshUserSession(refreshToken) {
+  return requestJson('/api/auth/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+}
+
+export async function logoutUser(token) {
+  return requestJson('/api/auth/logout', { method: 'POST', headers: bearerHeaders(token) });
+}
+
 function isObject(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-export async function analyzeVideo({ file }) {
+export async function analyzeVideo({ file, token, cameraLocation }) {
   if (!(file instanceof Blob)) throw new Error('Select a video file before submitting.');
   const form = new FormData();
   form.append('file', file);
-  const payload = await requestJson('/api/analyze', { method: 'POST', body: form });
+  if (cameraLocation) {
+    form.append('camera_id', cameraLocation.cameraId || '');
+    form.append('location_name', cameraLocation.locationName);
+    form.append('latitude', String(cameraLocation.latitude));
+    form.append('longitude', String(cameraLocation.longitude));
+    form.append('location_source', cameraLocation.source);
+  }
+  const payload = await requestJson('/api/analyze', {
+    method: 'POST',
+    headers: bearerHeaders(token),
+    body: form,
+  });
   if (!isObject(payload) || typeof payload.analysis_id !== 'string' || !payload.analysis_id.trim()) {
     throw new Error('The API response did not include a valid analysis_id.');
   }
@@ -46,9 +94,12 @@ export async function analyzeVideo({ file }) {
   return payload;
 }
 
-export async function getAnalysisStatus(analysisId, { signal } = {}) {
+export async function getAnalysisStatus(analysisId, { signal, token } = {}) {
   if (typeof analysisId !== 'string' || !analysisId.trim()) throw new Error('A valid analysis_id is required.');
-  const payload = await requestJson(`/api/analyses/${encodeURIComponent(analysisId)}`, { signal });
+  const payload = await requestJson(`/api/analyses/${encodeURIComponent(analysisId)}`, {
+    signal,
+    headers: bearerHeaders(token),
+  });
   if (!isObject(payload) || !ANALYSIS_STATUSES.has(payload.status)) {
     throw new Error('The API returned an unsupported analysis status.');
   }
@@ -58,9 +109,12 @@ export async function getAnalysisStatus(analysisId, { signal } = {}) {
   return payload;
 }
 
-export async function getCandidateEvents(analysisId, { signal } = {}) {
+export async function getCandidateEvents(analysisId, { signal, token } = {}) {
   if (typeof analysisId !== 'string' || !analysisId.trim()) throw new Error('A valid analysis_id is required.');
-  const payload = await requestJson(`/api/analyses/${encodeURIComponent(analysisId)}/events`, { signal });
+  const payload = await requestJson(`/api/analyses/${encodeURIComponent(analysisId)}/events`, {
+    signal,
+    headers: bearerHeaders(token),
+  });
   if (!isObject(payload) || !Array.isArray(payload.events)) {
     throw new Error('The event response must include an events array.');
   }
@@ -86,10 +140,38 @@ export function getAnnotatedVideoUrl(statusData) {
   }
 }
 
-export async function sendReviewDecision() {
-  throw new ApiContractPendingError('Review decisions are local demo state only. The review endpoint contract is not available.');
+export async function loadAnnotatedVideo(statusData, token, { signal } = {}) {
+  const path = statusData?.result?.annotated_video_url;
+  if (typeof path !== 'string' || !path.trim()) return null;
+  const url = new URL(path, API_BASE_URL || globalThis.location?.origin || 'http://localhost').toString();
+  let response;
+  try {
+    response = await fetch(url, { signal, headers: bearerHeaders(token) });
+  } catch (error) {
+    throw new Error(`Could not load the annotated video. ${error.message}`);
+  }
+  if (!response.ok) {
+    let message = `Video request failed with HTTP ${response.status}.`;
+    try {
+      const payload = await response.json();
+      if (typeof payload?.detail === 'string') message = payload.detail;
+    } catch { /* retain the HTTP message */ }
+    throw new Error(message);
+  }
+  const video = await response.blob();
+  return URL.createObjectURL(video);
+}
+
+export async function sendReviewDecision({ analysisId, eventId, decision, note = '', token }) {
+  if (!analysisId || !eventId) throw new Error('An analysis and candidate event are required to save a review.');
+  if (!['confirmed', 'dismissed'].includes(decision)) throw new Error('Choose confirmed or dismissed for the review decision.');
+  return requestJson(`/api/analyses/${encodeURIComponent(analysisId)}/events/${encodeURIComponent(eventId)}/review`, {
+    method: 'POST',
+    headers: bearerHeaders(token, { 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ decision, note }),
+  });
 }
 
 export async function getConfirmedHotspots() {
-  throw new ApiContractPendingError('Confirmed hotspots are unavailable until the API teammate provides the endpoint and response contract.');
+  return requestJson('/api/hotspots');
 }
