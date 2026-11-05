@@ -9,7 +9,7 @@ describe('analysis status polling', () => {
       { analysis_id: 'run-1', status: 'completed' },
     ];
     const getStatus = vi.fn(async () => statuses.shift());
-    const getEvents = vi.fn(async () => [{ event_id: 'evt-1' }]);
+    const getEvents = vi.fn(async () => ({ events_available: true, events: [{ event_id: 'evt-1' }], message: null }));
     const onStatus = vi.fn();
     const onEvents = vi.fn();
 
@@ -18,7 +18,34 @@ describe('analysis status polling', () => {
     expect(getStatus).toHaveBeenCalledTimes(3);
     expect(getEvents).toHaveBeenCalledTimes(1);
     expect(onStatus.mock.calls.map(([status]) => status.status)).toEqual(['queued', 'processing', 'completed']);
-    expect(onEvents).toHaveBeenCalledWith([{ event_id: 'evt-1' }]);
+    expect(onEvents).toHaveBeenCalledWith([{ event_id: 'evt-1' }], expect.objectContaining({ source: 'events-endpoint' }));
+  });
+
+  it('uses completed status result.events when the events endpoint says unavailable', async () => {
+    const onEvents = vi.fn();
+    await monitorAnalysis({
+      analysisId: 'run-with-result-events',
+      getStatus: async () => ({ status: 'completed', result: { events: [{ event_id: 'evt-result' }] } }),
+      getEvents: async () => ({ events_available: false, events: [], message: 'Events unavailable' }),
+      onEvents,
+      intervalMs: 0,
+    });
+    expect(onEvents).toHaveBeenCalledWith([{ event_id: 'evt-result' }], expect.objectContaining({ source: 'status' }));
+  });
+
+  it('falls back to completed result.events if loading the events endpoint fails', async () => {
+    const onEvents = vi.fn();
+    const onEventsError = vi.fn();
+    await monitorAnalysis({
+      analysisId: 'run-fallback',
+      getStatus: async () => ({ status: 'completed', result: { events: [{ event_id: 'evt-result' }] } }),
+      getEvents: async () => { throw new Error('events request failed'); },
+      onEvents,
+      onEventsError,
+      intervalMs: 0,
+    });
+    expect(onEvents).toHaveBeenCalledWith([{ event_id: 'evt-result' }], expect.objectContaining({ source: 'status' }));
+    expect(onEventsError).not.toHaveBeenCalled();
   });
 
   it('stops on failed status without requesting candidate events', async () => {

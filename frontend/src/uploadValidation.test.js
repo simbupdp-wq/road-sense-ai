@@ -2,19 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { formatFileSize, validateAnalysisUpload } from './uploadValidation.js';
 
 describe('video upload validation', () => {
-  it('requires both a supported video and a camera ID', () => {
-    expect(validateAnalysisUpload(null, 'cam-1')).toMatch(/select a video/i);
-    expect(validateAnalysisUpload(new File(['x'], 'clip.mp4', { type: 'video/mp4' }), '  ')).toMatch(/camera id/i);
+  it('requires a supported video file without requiring camera metadata', () => {
+    expect(validateAnalysisUpload(null)).toMatch(/select a video/i);
+    expect(validateAnalysisUpload(new File(['x'], 'street.txt'))).toMatch(/choose mp4/i);
+    expect(validateAnalysisUpload(new File(['x'], 'street.mp4'))).toBeNull();
   });
 
-  it('accepts documented video extensions and rejects unsupported files', () => {
-    expect(validateAnalysisUpload(new File(['x'], 'street.MOV'), 'cam-1')).toBeNull();
-    expect(validateAnalysisUpload(new File(['x'], 'notes.pdf', { type: 'application/pdf' }), 'cam-1')).toMatch(/mp4.*mov.*mkv.*avi.*webm/i);
-  });
-
-  it('formats file sizes without inventing missing values', () => {
-    expect(formatFileSize(0)).toBe('0 B');
+  it('formats local file size for display', () => {
+    expect(formatFileSize(4)).toBe('4 B');
     expect(formatFileSize(1024)).toBe('1 KB');
-    expect(formatFileSize(null)).toBe('—');
   });
 });

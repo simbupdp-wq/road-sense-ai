@@ -22,7 +22,6 @@ async function requestJson(path, options = {}) {
   } catch {
     throw new Error(`The API returned an unreadable response (HTTP ${response.status}).`);
   }
-
   if (!response.ok) {
     const detail = typeof payload?.detail === 'string' ? payload.detail : null;
     const message = typeof payload?.message === 'string' ? payload.message : null;
@@ -31,36 +30,26 @@ async function requestJson(path, options = {}) {
   return payload;
 }
 
-function requireUploadFieldNames() {
-  const videoField = String(import.meta.env.VITE_ANALYZE_VIDEO_FIELD || '').trim();
-  const cameraIdField = String(import.meta.env.VITE_ANALYZE_CAMERA_ID_FIELD || '').trim();
-  if (!videoField || !cameraIdField) {
-    throw new ApiContractPendingError(
-      'The API teammate has not confirmed the video and camera ID upload field names yet. No request was sent.',
-    );
-  }
-  if (videoField === cameraIdField) {
-    throw new ApiContractPendingError('The configured video and camera ID upload fields must be different.');
-  }
-  return { videoField, cameraIdField };
+function isObject(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-export async function analyzeVideo({ file, cameraId }) {
-  const { videoField, cameraIdField } = requireUploadFieldNames();
+export async function analyzeVideo({ file }) {
+  if (!(file instanceof Blob)) throw new Error('Select a video file before submitting.');
   const form = new FormData();
-  form.append(videoField, file);
-  form.append(cameraIdField, cameraId);
+  form.append('file', file);
   const payload = await requestJson('/api/analyze', { method: 'POST', body: form });
-  if (!payload || typeof payload !== 'object' || typeof payload.analysis_id !== 'string' || !payload.analysis_id.trim()) {
+  if (!isObject(payload) || typeof payload.analysis_id !== 'string' || !payload.analysis_id.trim()) {
     throw new Error('The API response did not include a valid analysis_id.');
   }
+  if (!ANALYSIS_STATUSES.has(payload.status)) throw new Error('The API response did not include a supported analysis status.');
   return payload;
 }
 
 export async function getAnalysisStatus(analysisId, { signal } = {}) {
   if (typeof analysisId !== 'string' || !analysisId.trim()) throw new Error('A valid analysis_id is required.');
   const payload = await requestJson(`/api/analyses/${encodeURIComponent(analysisId)}`, { signal });
-  if (!payload || typeof payload !== 'object' || !ANALYSIS_STATUSES.has(payload.status)) {
+  if (!isObject(payload) || !ANALYSIS_STATUSES.has(payload.status)) {
     throw new Error('The API returned an unsupported analysis status.');
   }
   if (payload.analysis_id != null && payload.analysis_id !== analysisId) {
@@ -72,16 +61,23 @@ export async function getAnalysisStatus(analysisId, { signal } = {}) {
 export async function getCandidateEvents(analysisId, { signal } = {}) {
   if (typeof analysisId !== 'string' || !analysisId.trim()) throw new Error('A valid analysis_id is required.');
   const payload = await requestJson(`/api/analyses/${encodeURIComponent(analysisId)}/events`, { signal });
-  if (!Array.isArray(payload) || payload.some((event) => !event || typeof event !== 'object' || Array.isArray(event))) {
-    throw new Error('The event response must be a JSON array of event objects. Confirm the response shape with the API teammate.');
+  if (!isObject(payload) || !Array.isArray(payload.events)) {
+    throw new Error('The event response must include an events array.');
   }
-  return payload;
+  if (payload.events.some((event) => !isObject(event))) throw new Error('The events array contains invalid event data.');
+  if (payload.analysis_id != null && payload.analysis_id !== analysisId) {
+    throw new Error('The event response analysis_id did not match the active analysis.');
+  }
+  return {
+    analysis_id: payload.analysis_id ?? analysisId,
+    events_available: payload.events_available === true,
+    events: payload.events,
+    message: typeof payload.message === 'string' ? payload.message : null,
+  };
 }
 
-export function getAnnotatedVideoUrl(analysisPayload) {
-  const configuredPath = String(import.meta.env.VITE_ANNOTATED_VIDEO_URL_PATH || '').trim();
-  if (!configuredPath || !analysisPayload || typeof analysisPayload !== 'object') return null;
-  const value = configuredPath.split('.').reduce((current, key) => current?.[key], analysisPayload);
+export function getAnnotatedVideoUrl(statusData) {
+  const value = statusData?.result?.annotated_video_url;
   if (typeof value !== 'string' || !value.trim()) return null;
   try {
     return new URL(value, API_BASE_URL || globalThis.location?.origin || 'http://localhost').toString();
@@ -91,13 +87,9 @@ export function getAnnotatedVideoUrl(analysisPayload) {
 }
 
 export async function sendReviewDecision() {
-  throw new ApiContractPendingError(
-    'Review decisions are local demo state only. The review endpoint contract is not available.',
-  );
+  throw new ApiContractPendingError('Review decisions are local demo state only. The review endpoint contract is not available.');
 }
 
 export async function getConfirmedHotspots() {
-  throw new ApiContractPendingError(
-    'Confirmed hotspots are unavailable until the API teammate provides the endpoint and response contract.',
-  );
+  throw new ApiContractPendingError('Confirmed hotspots are unavailable until the API teammate provides the endpoint and response contract.');
 }

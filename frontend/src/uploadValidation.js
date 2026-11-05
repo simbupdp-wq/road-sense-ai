@@ -1,10 +1,10 @@
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.mkv', '.avi', '.webm']);
 
-export function validateAnalysisUpload(file, cameraId) {
+export function validateAnalysisUpload(file) {
   if (!file) return 'Select a video file.';
   const extension = file.name?.slice(file.name.lastIndexOf('.')).toLowerCase();
   if (!VIDEO_EXTENSIONS.has(extension)) return 'Choose MP4, MOV, MKV, AVI, or WebM video.';
-  if (typeof cameraId !== 'string' || !cameraId.trim()) return 'Enter a camera ID.';
+  if (!Number.isFinite(file.size) || file.size <= 0) return 'Choose a non-empty video file.';
   return null;
 }
 

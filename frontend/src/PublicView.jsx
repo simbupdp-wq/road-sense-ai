@@ -78,7 +78,7 @@ export default function PublicView({ active }) {
     </div>
 
     {error && <div className="notice notice-error" role="alert"><AlertTriangle size={17} /><span>{error}</span></div>}
-    {source === 'empty' && <div className="notice notice-info" role="status"><MapPin size={17} /><span><strong>No confirmed hotspots are available.</strong> Hotspots API integration is pending.</span></div>}
+    {source === 'empty' && <div className="notice notice-info" role="status"><MapPin size={17} /><span><strong>Confirmed road-safety hotspots will appear here after authority review.</strong> The current API does not provide confirmed-hotspot data.</span></div>}
     {source === 'api' && locations.length === 0 && <div className="notice notice-info" role="status"><MapPin size={17} /><span>No confirmed locations were returned. Candidate records are not included.</span></div>}
     {source === 'demo' && <p className="demo-explanation">These sample points and counts are illustrative. They do not represent real incidents, cameras, or verified locations.</p>}
 

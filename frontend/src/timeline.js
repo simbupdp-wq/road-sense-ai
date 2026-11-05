@@ -1,12 +1,10 @@
 export function getEventSeekSeconds(event, frameRate) {
   if (!event) return null;
-  const value = event.peak_timestamp_seconds
-    ?? event.start_timestamp_seconds
-    ?? event.timestamp_seconds;
-  if (value !== null && value !== undefined && Number.isFinite(Number(value))) {
-    return Math.max(0, Number(value));
+  const peakTime = event.peak_time_seconds;
+  if (peakTime !== null && peakTime !== undefined && Number.isFinite(Number(peakTime))) {
+    return Math.max(0, Number(peakTime));
   }
-  const frame = event.peak_frame ?? event.start_frame ?? event.frame;
+  const frame = event.peak_frame;
   const fps = Number(frameRate);
   if (frame !== null && frame !== undefined && Number.isFinite(Number(frame)) && fps > 0 && Number.isFinite(fps)) {
     return Math.max(0, Number(frame) / fps);

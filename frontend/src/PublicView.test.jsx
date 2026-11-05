@@ -20,7 +20,7 @@ vi.mock('react-leaflet', () => ({
 describe('Public View', () => {
   it('starts with no public hotspots while the confirmed endpoint contract is pending', () => {
     render(<PublicView active />);
-    expect(screen.getByText('No confirmed hotspots are available.')).toBeInTheDocument();
+    expect(screen.getByText(/confirmed road-safety hotspots will appear here after authority review/i)).toBeInTheDocument();
     expect(screen.queryByText(/DEMO DATA/)).not.toBeInTheDocument();
   });
 

@@ -42,11 +42,23 @@ export async function monitorAnalysis({
 
       if (status.status === 'completed') {
         onEventsLoading(true);
+        const resultEvents = Array.isArray(status?.result?.events)
+          && status.result.events.every((event) => event && typeof event === 'object' && !Array.isArray(event))
+          ? status.result.events : null;
         try {
-          const events = await getEvents(analysisId, { signal });
-          if (!signal?.aborted) onEvents(events);
+          const payload = await getEvents(analysisId, { signal });
+          if (!payload || !Array.isArray(payload.events)) throw new Error('The API event response did not include an events array.');
+          const useStatusEvents = payload.events_available === false && resultEvents !== null;
+          const events = useStatusEvents ? resultEvents : payload.events;
+          if (!signal?.aborted) onEvents(events, {
+            source: useStatusEvents ? 'status' : 'events-endpoint',
+            message: payload.message || null,
+            eventsAvailable: payload.events_available === true || (useStatusEvents && events.length > 0),
+          });
         } catch (error) {
-          if (!signal?.aborted) onEventsError(error);
+          if (!signal?.aborted && resultEvents !== null) {
+            onEvents(resultEvents, { source: 'status', message: error.message, eventsAvailable: resultEvents.length > 0 });
+          } else if (!signal?.aborted) onEventsError(error);
         } finally {
           if (!signal?.aborted) onEventsLoading(false);
         }

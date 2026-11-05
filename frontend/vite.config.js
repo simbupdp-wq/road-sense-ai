@@ -8,7 +8,10 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     server: {
-      proxy: { '/api': { target: apiProxyTarget, changeOrigin: true } },
+      proxy: {
+        '/api': { target: apiProxyTarget, changeOrigin: true },
+        '/results': { target: apiProxyTarget, changeOrigin: true },
+      },
     },
     test: {
       environment: 'jsdom',
