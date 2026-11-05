@@ -2,6 +2,25 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import App from './App.jsx';
 
+vi.mock('./api.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    loginUser: vi.fn(async ({ email, role }) => ({
+      access_token: `${role}-access-token`,
+      refresh_token: `${role}-refresh-token`,
+      expires_in: 3600,
+      user: { user_id: `${role}-user`, name: email.split('@')[0], email, role },
+    })),
+    getCurrentUser: vi.fn(async (token) => {
+      const role = token.startsWith('authority-') ? 'authority' : 'public';
+      return { user: { user_id: `${role}-user`, name: `${role} user`, email: `${role}@example.org`, role } };
+    }),
+    logoutUser: vi.fn().mockResolvedValue({ ok: true }),
+    getConfirmedHotspots: vi.fn().mockResolvedValue([]),
+  };
+});
+
 vi.mock('react-leaflet', () => ({
   MapContainer: ({ children }) => <div data-testid="leaflet-map">{children}</div>,
   TileLayer: () => <div data-testid="osm-tiles" />,
@@ -35,15 +54,15 @@ describe('RoadSense role routes', () => {
     expect(screen.getByLabelText('Password')).toHaveAttribute('type', 'text');
   });
 
-  it('requires login on direct workspace routes and enforces the selected role', () => {
+  it('requires login on direct workspace routes and enforces the selected role', async () => {
     window.history.replaceState({}, '', '/authority');
     const { rerender, unmount } = render(<App />);
     expect(screen.getByRole('heading', { name: 'Authority Portal' })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'reviewer@example.org' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'prototype-password' } });
     fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
-    expect(screen.getByRole('heading', { name: 'Review traffic video' })).toBeInTheDocument();
-    expect(screen.getByText(/authority · prototype/i)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Review traffic video' })).toBeInTheDocument();
+    expect(screen.getByText('Authority account')).toBeInTheDocument();
 
     window.history.pushState({}, '', '/public');
     fireEvent.popState(window);
@@ -53,15 +72,16 @@ describe('RoadSense role routes', () => {
     unmount();
     window.history.pushState({}, '', '/authority/events');
     render(<App />);
-    expect(screen.getByRole('heading', { name: 'Review traffic video' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Review traffic video' })).toBeInTheDocument();
   });
 
-  it('blocks an Authority user from Public routes and returns to login after logout', () => {
+  it('blocks an Authority user from Public routes and returns to login after logout', async () => {
     window.history.replaceState({}, '', '/authority/login');
     render(<App />);
     fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'staff@example.org' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'prototype-password' } });
     fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+    expect(await screen.findByRole('heading', { name: 'Review traffic video' })).toBeInTheDocument();
     window.history.pushState({}, '', '/public');
     fireEvent.popState(window);
     expect(screen.getByRole('heading', { name: 'Review traffic video' })).toBeInTheDocument();
@@ -69,28 +89,29 @@ describe('RoadSense role routes', () => {
     expect(screen.getByRole('heading', { name: 'Authority Portal' })).toBeInTheDocument();
   });
 
-  it('prevents a Public session from opening Authority routes directly', () => {
+  it('prevents a Public session from opening Authority routes directly', async () => {
     window.history.replaceState({}, '', '/public/login');
     render(<App />);
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'visitor@example.org' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'prototype-password' } });
     fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+    expect(await screen.findByRole('heading', { name: 'Confirmed hotspots' })).toBeInTheDocument();
     window.history.pushState({}, '', '/authority/events');
     fireEvent.popState(window);
     expect(screen.getByRole('heading', { name: 'Confirmed hotspots' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Review traffic video' })).not.toBeInTheDocument();
   });
 
-  it('keeps demo locations explicitly labeled in the public workspace', () => {
+  it('keeps demo locations explicitly labeled in the public workspace', async () => {
     window.history.replaceState({}, '', '/public/login');
     render(<App />);
     fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'visitor@example.org' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'prototype-password' } });
     fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
-    expect(screen.getByRole('heading', { name: 'Confirmed hotspots' })).toBeInTheDocument();
-    expect(screen.getByText(/confirmed road-safety hotspots will appear here after authority review/i)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Confirmed hotspots' })).toBeInTheDocument();
+    expect(screen.getByText(/confirmed road-safety hotspots appear here after authority review/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Show demo hotspots' }));
-    expect(screen.getByText('DEMO DATA · NOT REAL INCIDENTS')).toBeInTheDocument();
+    expect(screen.getByText('DEMO COORDINATES · NOT VERIFIED LOCATIONS')).toBeInTheDocument();
     expect(screen.getAllByText('Demo Route Suggestion').length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -4,7 +4,7 @@ import { formatFileSize, validateAnalysisUpload } from './uploadValidation.js';
 describe('video upload validation', () => {
   it('requires a supported video file without requiring camera metadata', () => {
     expect(validateAnalysisUpload(null)).toMatch(/select a video/i);
-    expect(validateAnalysisUpload(new File(['x'], 'street.txt'))).toMatch(/choose mp4/i);
+    expect(validateAnalysisUpload(new File(['x'], 'street.txt'))).toMatch(/choose an mp4/i);
     expect(validateAnalysisUpload(new File(['x'], 'street.mp4'))).toBeNull();
   });
 

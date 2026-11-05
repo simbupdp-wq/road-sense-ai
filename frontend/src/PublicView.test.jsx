@@ -20,7 +20,7 @@ vi.mock('react-leaflet', () => ({
 describe('Public View', () => {
   it('starts with no public hotspots while the confirmed endpoint contract is pending', () => {
     render(<PublicView active />);
-    expect(screen.getByText(/confirmed road-safety hotspots will appear here after authority review/i)).toBeInTheDocument();
+    expect(screen.getByText(/confirmed road-safety hotspots appear here after authority review/i)).toBeInTheDocument();
     expect(screen.queryByText(/DEMO DATA/)).not.toBeInTheDocument();
   });
 
@@ -46,7 +46,7 @@ describe('Public View', () => {
   it('shows confirmed sample locations and a route only behind the demo action', () => {
     render(<PublicView active />);
     fireEvent.click(screen.getByRole('button', { name: 'Show demo hotspots' }));
-    expect(screen.getByText('DEMO DATA · NOT REAL INCIDENTS')).toBeInTheDocument();
+    expect(screen.getByText('DEMO COORDINATES · NOT VERIFIED LOCATIONS')).toBeInTheDocument();
     expect(screen.getAllByText('Demo Route Suggestion').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/not navigation, route optimization, or a safety recommendation/i)).toBeInTheDocument();
     expect(screen.getAllByText(/Illustrative location/).length).toBeGreaterThan(0);

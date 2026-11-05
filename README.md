@@ -122,7 +122,7 @@ Uploaded source videos are stored temporarily in `backend/uploads/` and removed 
 - Analysis status is in memory and does not survive an API restart.
 - Supabase Auth/Postgres covers accounts and profiles. Uploaded footage, analysis status, and generated output files still live on the API machine; they are not stored in Supabase Storage yet.
 - This is a hackathon prototype. For public deployment, configure HTTPS, restrict Supabase redirect URLs, and review account and data-retention policies.
-- Detection and near-miss thresholds have not been validated as a safety system. Results are for demonstration and human review only.
+- Detection and near-miss thresholds have not been validated as a safety system. The system does not predict accidents; results are for demonstration and human review only.
 
 ## Technology
 
