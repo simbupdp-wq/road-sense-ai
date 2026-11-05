@@ -114,3 +114,20 @@ create index if not exists road_safety_events_camera_location_idx
     on public.road_safety_events (camera_id, latitude, longitude);
 create index if not exists road_safety_events_review_status_idx
     on public.road_safety_events (review_status);
+
+do $$
+begin
+    if to_regclass('public.profiles') is null then
+        raise exception 'RoadSense setup incomplete: public.profiles was not created.';
+    end if;
+    if to_regclass('public.road_safety_events') is null then
+        raise exception 'RoadSense setup incomplete: public.road_safety_events was not created.';
+    end if;
+end;
+$$;
+
+notify pgrst, 'reload schema';
+
+select
+    to_regclass('public.profiles') as profiles_table,
+    to_regclass('public.road_safety_events') as events_table;
